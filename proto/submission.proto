@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package submission;
+
+option go_package = "code-checker/pkg/submission;submission";
+
+service SubmissionService {
+  rpc CreateSubmission(stream CreateSubmissionRequest) returns (Submission);
+}
+
+message CreateSubmissionRequest {
+  oneof data {
+    SubmissionInfo info = 1;
+    bytes chunk_data = 2;
+  }
+}
+
+message SubmissionInfo {
+  string user_id = 1;
+  string problem_id = 2;
+  string language = 3;
+}
+
+message Submission {
+  string id = 1;
+  string problem_id = 2;
+  string user_id = 3;
+  string code = 4;
+  string language = 5;
+  string status = 6; // "Pending", "AC", "WA", "TLE", "CE", "RE"
+  string created_at = 7;
+  string updated_at = 8;
+}

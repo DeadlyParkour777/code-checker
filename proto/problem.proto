@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package problem;
+
+option go_package = "github.com/DeadlyParkour777/code-checker/pkg/problempb;problempb";
+
+service ProblemService {
+  rpc CreateProblem(CreateProblemRequest) returns (Problem);
+  rpc GetProblem(GetProblemRequest) returns (Problem);
+  rpc ListProblems(ListProblemsRequest) returns (ListProblemsResponse);
+  rpc CreateTestCase(CreateTestCaseRequest) returns (TestCase);
+  rpc GetTestCases(GetTestCasesRequest) returns (GetTestCasesResponse);
+}
+
+message CreateProblemRequest {
+  string title = 1;
+  string description = 2;
+}
+
+message GetProblemRequest {
+  string id = 1;
+}
+
+message ListProblemsRequest {}
+
+message Problem {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string created_at = 4;
+}
+
+message ListProblemsResponse {
+  repeated Problem problems = 1;
+}
+
+message TestCase {
+  string id = 1;
+  string problem_id = 2;
+  string input_data = 3;
+  string output_data = 4;
+}
+
+message CreateTestCaseRequest {
+  string problem_id = 1;
+  string input_data = 2;
+  string output_data = 3;
+}
+
+message GetTestCasesRequest {
+  string problem_id = 1;
+}
+
+message GetTestCasesResponse {
+  repeated TestCase test_cases = 1;
+}

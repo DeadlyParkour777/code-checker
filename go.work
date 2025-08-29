@@ -1,0 +1,11 @@
+go 1.24.4
+
+use (
+	./auth_service
+	./gateway
+	./judge_service
+	./pkg
+	./problem_service
+	./result_service
+	./submission_service
+)

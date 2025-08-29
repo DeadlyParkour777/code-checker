@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS submissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    problem_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    code TEXT NOT NULL,
+    language VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

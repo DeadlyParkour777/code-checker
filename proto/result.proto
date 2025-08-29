@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package result;
+
+option go_package = "github.com/DeadlyParkour777/code-checker/pkg/resultpb;resultpb";
+
+message Submission {
+  string id = 1;
+  string problem_id = 2;
+  string user_id = 3;
+  string language = 4;
+  string status = 5;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+service ResultService {
+  rpc GetUserSubmissions(GetUserSubmissionsRequest) returns (GetUserSubmissionsResponse);
+}
+
+message GetUserSubmissionsRequest {
+  string user_id = 1;
+}
+
+message GetUserSubmissionsResponse {
+  repeated Submission submissions = 1;
+}
