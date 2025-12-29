@@ -20,3 +20,6 @@ temp_submissions/
 
 dump.rdb
 *.rdb
+
+go.work
+go.work.sum
