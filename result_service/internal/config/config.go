@@ -27,15 +27,17 @@ type Config struct {
 func ConfigInit() Config {
 	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
 	return Config{
-		GRPCPort:      getEnv("GRPC_PORT", "8003"),
-		KafkaBrokers:  strings.Split(getEnv("KAFKA_BROKERS", "kafka:29092"), ","),
-		ResultTopic:   "results",
-		GroupID:       "result-group",
-		DBHost:        getEnv("DB_HOST", "auth-db"),
-		DBPort:        "5432",
-		DBUser:        "postgres",
-		DBPassword:    "admin",
-		DBName:        "authdb",
+		GRPCPort:     getEnv("GRPC_PORT", "8003"),
+		KafkaBrokers: strings.Split(getEnv("KAFKA_BROKERS", "kafka:29092"), ","),
+		ResultTopic:  getEnv("RESULT_TOPIC", "results"),
+		GroupID:      getEnv("GROUP_ID", "result-group"),
+
+		DBHost:     getEnv("DB_HOST", "auth-db"),
+		DBPort:     getEnv("DB_PORT", "5432"),
+		DBUser:     getEnv("DB_USER", "postgres"),
+		DBPassword: getEnv("DB_PASSWORD", "postgres"),
+		DBName:     getEnv("DB_PASSWORD", "code_checker_db"),
+
 		RedisAddr:     getEnv("REDIS_ADDR", "redis:6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       redisDB,
