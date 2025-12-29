@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN go mod download
+RUN go work init && go work use -r .
 
 ARG SERVICE_DIR
 
