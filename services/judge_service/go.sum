@@ -2,8 +2,6 @@ github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 h1:He8af
 github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6/go.mod h1:8o94RPi1/7XTJvwPpRSzSUedZrtlirdB3r9Z20bi2f8=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
-github.com/DeadlyParkour777/code-checker/judge_service v0.0.0-20251229162914-780baa59fdc6 h1:4GqxJL8eHqRJNkhIZcp4Df3bZy/ioNa6Y8aRXSBvo64=
-github.com/DeadlyParkour777/code-checker/judge_service v0.0.0-20251229162914-780baa59fdc6/go.mod h1:M+1QgOOtHp/y3ElwiBdtNIheDdkxQH5QhbY6f8Xb6tc=
 github.com/DeadlyParkour777/code-checker/pkg v0.0.0-20251229162914-780baa59fdc6 h1:ttWqYtYPTQ3jzpCveRPwGYa2G0qTvaF3bbP2YcMRWzk=
 github.com/DeadlyParkour777/code-checker/pkg v0.0.0-20251229162914-780baa59fdc6/go.mod h1:DGgXJmszTDJ6iX6ML2ppSaHFTQFm3R7PrenvWGuqe7o=
 github.com/Microsoft/go-winio v0.4.21 h1:+6mVbXh4wPzUrl1COX9A+ZCvEpYsOBZ6/+kwDnvLyro=

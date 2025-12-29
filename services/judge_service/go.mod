@@ -3,7 +3,6 @@ module github.com/DeadlyParkour777/code-checker/services/judge_service
 go 1.24.4
 
 require (
-	github.com/DeadlyParkour777/code-checker/judge_service v0.0.0-20251229162914-780baa59fdc6
 	github.com/DeadlyParkour777/code-checker/pkg v0.0.0-20251229162914-780baa59fdc6
 	github.com/docker/docker v28.3.3+incompatible
 	github.com/google/uuid v1.6.0
