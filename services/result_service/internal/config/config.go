@@ -36,7 +36,7 @@ func ConfigInit() Config {
 		DBPort:     getEnv("DB_PORT", "5432"),
 		DBUser:     getEnv("DB_USER", "postgres"),
 		DBPassword: getEnv("DB_PASSWORD", "postgres"),
-		DBName:     getEnv("DB_PASSWORD", "code_checker_db"),
+		DBName:     getEnv("DB_NAME", "code_checker_db"),
 
 		RedisAddr:     getEnv("REDIS_ADDR", "redis:6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
