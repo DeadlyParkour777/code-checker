@@ -10,7 +10,15 @@ docker-compose.yml
 /bin
 *.exe
 *.test
+*.out
 
 .idea/
 .vscode/
 *.DS_Store
+
+go.work
+go.work.sum
+
+*.md
+docs/
+LICENSE
