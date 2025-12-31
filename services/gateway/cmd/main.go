@@ -7,15 +7,6 @@ import (
 	"github.com/DeadlyParkour777/code-checker/services/gateway/internal/config"
 )
 
-// @title Code Checker API Gateway
-// @version 1.0
-
-// @host localhost:8000
-// @BasePath /
-
-// @securityDefinitions.apikey ApiKeyAuth
-// @in header
-// @name Authorization
 func main() {
 	cfg := config.ConfigInit()
 	log.Println("Configuration loaded")

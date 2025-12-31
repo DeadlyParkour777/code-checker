@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"embed"
 	"io"
 	"net/http"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	resultpb "github.com/DeadlyParkour777/code-checker/pkg/result"
 	submissionpb "github.com/DeadlyParkour777/code-checker/pkg/submission"
 	"github.com/DeadlyParkour777/code-checker/pkg/utils"
-	_ "github.com/DeadlyParkour777/code-checker/services/gateway/docs"
 	"github.com/DeadlyParkour777/code-checker/services/gateway/internal/cache"
 	"github.com/DeadlyParkour777/code-checker/services/gateway/internal/types"
 	"github.com/go-chi/chi/v5"
@@ -21,6 +21,9 @@ import (
 	"github.com/go-playground/validator/v10"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
+
+//go:embed openapi.yaml
+var openApiSpec embed.FS
 
 type userCtxKey string
 
@@ -67,7 +70,20 @@ func (h *Handler) Routes() http.Handler {
 		MaxAge:           300,
 	}))
 
-	r.Get("/swagger/*", httpSwagger.WrapHandler)
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		data, err := openApiSpec.ReadFile("openapi.yaml")
+		if err != nil {
+			http.Error(w, "Spec not found", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/x-yaml")
+		w.Write(data)
+	})
+
+	r.Get("/swagger/*", httpSwagger.Handler(
+		httpSwagger.URL("/openapi.yaml"),
+	))
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJSON(w, http.StatusOK, "Gateway is running")
@@ -146,16 +162,6 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 
 }
 
-// @Summary Register a new user
-// @Description Creates a new user account.
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param account body types.RegisterRequest true "User Registration Info"
-// @Success 201 {object} authpb.RegisterResponse
-// @Failure 400 {object} map[string]string "Invalid request body or validation error"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /auth/register [post]
 func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req types.RegisterRequest
 	if err := utils.ParseJSON(r, &req); err != nil {
@@ -179,16 +185,6 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// @Summary Log in a user
-// @Description Authenticates a user and returns JWT tokens.
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param credentials body types.LoginRequest true "User Login Credentials"
-// @Success 200 {object} authpb.LoginResponse
-// @Failure 400 {object} map[string]string "Invalid request body or validation error"
-// @Failure 401 {object} map[string]string "Invalid credentials"
-// @Router /auth/login [post]
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req types.LoginRequest
 	if err := utils.ParseJSON(r, &req); err != nil {
@@ -212,18 +208,6 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, resp)
 }
 
-// @Summary Create a new problem
-// @Description Adds a new problem to the system. Requires authentication.
-// @Tags problems
-// @Security ApiKeyAuth
-// @Accept json
-// @Produce json
-// @Param problem body types.CreateProblemRequest true "Problem Info"
-// @Success 201 {object} problempb.Problem
-// @Failure 400 {object} map[string]string "Invalid request body or validation error"
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /problems [post]
 func (h *Handler) handleCreateProblem(w http.ResponseWriter, r *http.Request) {
 	var req types.CreateProblemRequest
 	if err := utils.ParseJSON(r, &req); err != nil {
@@ -247,14 +231,6 @@ func (h *Handler) handleCreateProblem(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// @Summary List all problems
-// @Description Retrieves a list of all available problems. Requires authentication.
-// @Tags problems
-// @Produce json
-// @Success 200 {array} problempb.Problem
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /problems [get]
 func (h *Handler) handleListProblems(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.problemClient.ListProblems(r.Context(), &problempb.ListProblemsRequest{})
 	if err != nil {
@@ -265,16 +241,6 @@ func (h *Handler) handleListProblems(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, resp.Problems)
 }
 
-// @Summary Get a single problem by ID
-// @Description Retrieves details for a specific problem. Requires authentication.
-// @Tags problems
-// @Produce json
-// @Param problemID path string true "Problem ID"
-// @Success 200 {object} problempb.Problem
-// @Failure 400 {object} map[string]string "Problem ID is required"
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 404 {object} map[string]string "Problem not found"
-// @Router /problems/{problemID} [get]
 func (h *Handler) handleGetProblem(w http.ResponseWriter, r *http.Request) {
 	problemID := chi.URLParam(r, "problemID")
 	if problemID == "" {
@@ -291,20 +257,6 @@ func (h *Handler) handleGetProblem(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, resp)
 }
 
-// @Summary Create a new submission
-// @Description Submits a code file for a specific problem. Requires authentication.
-// @Tags submissions
-// @Security ApiKeyAuth
-// @Accept multipart/form-data
-// @Produce json
-// @Param problem_id formData string true "ID of the problem"
-// @Param language formData string true "Programming language (e.g., 'go', 'python')"
-// @Param code_file formData file true "The code file to be submitted"
-// @Success 202 {object} submissionpb.Submission
-// @Failure 400 {object} map[string]string "Bad request (e.g., missing file)"
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /submissions [post]
 func (h *Handler) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
@@ -380,15 +332,6 @@ func (h *Handler) handleCreateSubmission(w http.ResponseWriter, r *http.Request)
 	utils.WriteJSON(w, http.StatusAccepted, resp)
 }
 
-// @Summary Get user's submission history
-// @Description Retrieves a list of all submissions made by the authenticated user.
-// @Tags submissions
-// @Security ApiKeyAuth
-// @Produce json
-// @Success 200 {array} resultpb.Submission
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /submissions/history [get]
 func (h *Handler) handleGetUserSubmissions(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
@@ -401,21 +344,6 @@ func (h *Handler) handleGetUserSubmissions(w http.ResponseWriter, r *http.Reques
 	utils.WriteJSON(w, http.StatusOK, resp.Submissions)
 }
 
-// @Summary Create a test case for a problem
-// @Description Adds a new test case to a specific problem. Requires admin rights.
-// @Tags problems
-// @Security ApiKeyAuth
-// @Accept json
-// @Produce json
-// @Param problemID path string true "ID of the problem to add test case to"
-// @Param testCase body types.CreateTestCaseRequest true "Test Case Data"
-// @Success 201 {object} problempb.TestCase
-// @Failure 400 {object} map[string]string "Invalid request body or problem ID"
-// @Failure 401 {object} map[string]string "Unauthorized"
-// @Failure 403 {object} map[string]string "Forbidden"
-// @Failure 404 {object} map[string]string "Problem not found"
-// @Failure 500 {object} map[string]string "Internal server error"
-// @Router /problems/{problemID}/testcases [post]
 func (h *Handler) handleCreateTestCase(w http.ResponseWriter, r *http.Request) {
 	problemID := chi.URLParam(r, "problemID")
 	if problemID == "" {

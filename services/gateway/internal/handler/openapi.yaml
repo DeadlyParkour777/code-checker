@@ -1,0 +1,360 @@
+openapi: 3.0.3
+info:
+  title: Code Checker API Gateway
+  version: "1.0"
+  description: API Gateway for Code Checker service
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+paths:
+  /:
+    get:
+      summary: Health check
+      description: Checks if the gateway is running
+      responses:
+        '200':
+          description: Gateway is running
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Gateway is running"
+
+  /auth/register:
+    post:
+      tags:
+        - auth
+      summary: Register a new user
+      description: Creates a new user account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: Invalid request body or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+
+  /auth/login:
+    post:
+      tags:
+        - auth
+      summary: Log in a user
+      description: Authenticates a user and returns JWT tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Invalid credentials
+
+  /problems:
+    get:
+      tags:
+        - problems
+      summary: List all problems
+      description: Retrieves a list of all available problems.
+      responses:
+        '200':
+          description: List of problems
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Problem'
+        '500':
+          description: Internal server error
+    post:
+      tags:
+        - problems
+      summary: Create a new problem
+      description: Adds a new problem to the system. Requires Admin role.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProblemRequest'
+      responses:
+        '201':
+          description: Problem created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden (Admins only)
+
+  /problems/{problemID}:
+    get:
+      tags:
+        - problems
+      summary: Get a single problem by ID
+      parameters:
+        - name: problemID
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Problem ID
+      responses:
+        '200':
+          description: Problem details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '400':
+          description: Problem ID is required
+        '404':
+          description: Problem not found
+
+  /problems/{problemID}/testcases:
+    post:
+      tags:
+        - problems
+      summary: Create a test case for a problem
+      description: Adds a new test case. Requires Admin role.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: problemID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTestCaseRequest'
+      responses:
+        '201':
+          description: Test case created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCase'
+        '400':
+          description: Invalid request
+        '403':
+          description: Forbidden
+
+  /submissions:
+    post:
+      tags:
+        - submissions
+      summary: Create a new submission
+      description: Submits a code file for a specific problem.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - problem_id
+                - language
+                - code_file
+              properties:
+                problem_id:
+                  type: string
+                  description: ID of the problem
+                language:
+                  type: string
+                  description: Programming language (e.g., 'go', 'python')
+                code_file:
+                  type: string
+                  format: binary
+                  description: The code file to be submitted
+      responses:
+        '202':
+          description: Submission accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Submission'
+        '400':
+          description: Bad request (missing file or fields)
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /submissions/history:
+    get:
+      tags:
+        - submissions
+      summary: Get user's submission history
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of user submissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubmissionResult'
+        '401':
+          description: Unauthorized
+
+components:
+  securitySchemes:
+    # Используем HTTP Bearer, так как код парсит "Bearer <token>"
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+
+    RegisterResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+
+    LoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+
+    CreateProblemRequest:
+      type: object
+      required:
+        - title
+        - description
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+
+    Problem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+
+    CreateTestCaseRequest:
+      type: object
+      required:
+        - input_data
+        - output_data
+      properties:
+        input_data:
+          type: string
+        output_data:
+          type: string
+
+    TestCase:
+      type: object
+      properties:
+        id:
+          type: string
+        problem_id:
+          type: string
+        input_data:
+          type: string
+        output_data:
+          type: string
+
+    Submission:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          example: "queued"
+        problem_id:
+          type: string
+
+    SubmissionResult:
+      type: object
+      properties:
+        id:
+          type: string
+        problem_id:
+          type: string
+        language:
+          type: string
+        status:
+          type: string
+        execution_time:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
