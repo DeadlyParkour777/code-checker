@@ -36,9 +36,9 @@ services:
       "
     restart: "no"
 
-  auth-db:
+  db:
     image: postgres:17-alpine
-    container_name: auth-db
+    container_name: db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -46,7 +46,7 @@ services:
     ports:
       - "${DB_PORT}:5432"
     volumes:
-      - auth-db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql/data
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -64,7 +64,7 @@ services:
       - ./migrations:/migrations
     command: ["/migrate", "up"]
     depends_on:
-      auth-db:
+      db:
         condition: service_healthy
     restart: "no"
 
@@ -98,7 +98,7 @@ services:
     env_file:
       - ./services/submission_service/.env
     depends_on:
-      - auth-db
+      - db
       - kafka-init
       - problem_service
     restart: on-failure
@@ -181,5 +181,5 @@ services:
     restart: on-failure
 
 volumes:
-  auth-db-data:
+  db-data:
   redis-data:
