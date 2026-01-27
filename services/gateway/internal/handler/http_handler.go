@@ -81,6 +81,10 @@ func (h *Handler) Routes() http.Handler {
 		w.Write(data)
 	})
 
+	r.Get("/swagger", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+	})
+
 	r.Get("/swagger/*", httpSwagger.Handler(
 		httpSwagger.URL("/openapi.yaml"),
 	))
