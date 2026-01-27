@@ -1,4 +1,5 @@
 # Code Checker
+Сервис проверки решений задач. Принимает файл с кодом, прогоняет тесты и возвращает результат.
 
 ## Сервисы
 - **gateway** — HTTP API + Swagger, агрегирует gRPC вызовы
@@ -45,4 +46,4 @@ docker compose up --build
 - `proto/` — protobuf схемы
 - `pkg/` — общий код + сгенерированный gRPC-код
 - `migrations/` — миграции Postgres
-- `docker-compose.yml` — локальный запуск всего стека
+- `docker-compose.yml` — конфигурация Docker Compose для запуска
