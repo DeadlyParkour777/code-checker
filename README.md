@@ -37,7 +37,7 @@ make cover      # покрытие по каждому пакету
 make cover-quiet # покрытие только там, где оно есть
 ```
 
-Интеграционные тесты `problem_service` используют Testcontainers — нужен запущенный Docker.
+Интеграционные тесты БД используют Testcontainers. Нужен запущенный Docker.
 
 ## Endpoints
 - Healthcheck: `GET http://localhost:8000`
