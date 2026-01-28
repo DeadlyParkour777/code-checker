@@ -20,13 +20,17 @@ type Service interface {
 	GetTestCases(ctx context.Context, problemID string) ([]*types.TestCase, error)
 }
 
+type KafkaWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+}
+
 type service struct {
 	store         store.Store
 	kafkaTopic    string
-	kafkaProducer *kafka.Writer
+	kafkaProducer KafkaWriter
 }
 
-func NewService(store store.Store, kafkaTopic string, kafkaProducer *kafka.Writer) Service {
+func NewService(store store.Store, kafkaTopic string, kafkaProducer KafkaWriter) Service {
 	return &service{
 		store:         store,
 		kafkaTopic:    kafkaTopic,
