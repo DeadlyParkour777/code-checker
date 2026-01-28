@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
@@ -61,9 +63,14 @@ CMD ["python", "main.py"]
 
 const sharedSubmissionsDir = "/tmp/submissions"
 
+const (
+	buildTimeout = 120 * time.Second
+)
+
 type Service interface {
 	ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent)
 }
+
 type service struct {
 	kafkaProducer *kafka.Writer
 	dockerClient  *client.Client
@@ -96,11 +103,7 @@ func NewService(producer *kafka.Writer, timeout time.Duration, hostTempPath stri
 func (s *service) ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent) {
 	log.Printf("Started processing submission %s", submission.SubmissionID)
 	go func() {
-		initialTimeout := 10 * time.Second
-		jobCtx, cancel := context.WithTimeout(context.Background(), initialTimeout)
-		defer cancel()
-
-		result, err := s.judge(jobCtx, submission)
+		result, err := s.judge(ctx, submission)
 		if err != nil {
 			result = &ty.ResultEvent{
 				SubmissionID: submission.SubmissionID,
@@ -109,7 +112,7 @@ func (s *service) ProcessSubmission(ctx context.Context, submission *ty.Submissi
 			}
 		}
 
-		err = s.kafkaProducer.WriteMessages(jobCtx, kafka.Message{Value: result.Marshal()})
+		err = s.kafkaProducer.WriteMessages(ctx, kafka.Message{Value: result.Marshal()})
 		if err != nil {
 			log.Printf("Failed to write result for submission %s: %v", submission.SubmissionID, err)
 		} else {
@@ -149,6 +152,11 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 
 	tempDir, err := os.MkdirTemp(sharedSubmissionsDir, "sub-*")
 	if err != nil {
+		return &ty.ResultEvent{
+			SubmissionID: submission.SubmissionID,
+			Status:       "RE",
+			Message:      "Failed to create temp dir",
+		}, err
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -168,19 +176,17 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 	}
 
 	imageName := "sandbox-" + uuid.New().String()
-	err = s.buildSandboxImage(ctx, tempDir, imageName)
-	if err != nil {
+	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
+	defer cancelBuild()
+	if err := s.buildSandboxImage(buildCtx, tempDir, imageName); err != nil {
+		log.Printf("Build failed for submission %s: %v", submission.SubmissionID, err)
 		return &ty.ResultEvent{
 			SubmissionID: submission.SubmissionID,
 			Status:       "CE",
 			Message:      fmt.Sprintf("Compilation Error: %v", err),
 		}, nil
 	}
-	defer s.dockerClient.ImageRemove(ctx, imageName, image.RemoveOptions{Force: true})
-
-	executionTimeout := (s.timeout + time.Second) * time.Duration(len(testCases))
-	runCtx, runCancel := context.WithTimeout(ctx, executionTimeout)
-	defer runCancel()
+	defer s.dockerClient.ImageRemove(context.Background(), imageName, image.RemoveOptions{Force: true})
 
 	for i, testCase := range testCases {
 		log.Printf("Running test case %d for submission %s", i+1, submission.SubmissionID)
@@ -190,7 +196,9 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 			Output: testCase.GetOutputData(),
 		}
 
+		runCtx, cancelRun := context.WithTimeout(ctx, s.timeout)
 		status, output, err := s.runTestCase(runCtx, imageName, internalTC)
+		cancelRun()
 		if err != nil {
 			return &ty.ResultEvent{
 				SubmissionID: submission.SubmissionID,
@@ -229,15 +237,38 @@ func (s *service) buildSandboxImage(ctx context.Context, dir, imageName string) 
 		return fmt.Errorf("failed to build image: %w", err)
 	}
 	defer resp.Body.Close()
-	buf := new(bytes.Buffer)
-	if _, err := io.Copy(buf, resp.Body); err != nil {
-		return fmt.Errorf("error reading build response: %w", err)
+
+	if err := parseBuildErrors(resp.Body); err != nil {
+		return err
 	}
 
-	if strings.Contains(strings.ToLower(buf.String()), "error:") {
-		return fmt.Errorf("build failed: %s", buf.String())
-	}
+	return nil
+}
 
+func parseBuildErrors(r io.Reader) error {
+	dec := json.NewDecoder(r)
+	var out bytes.Buffer
+	for dec.More() {
+		var msg struct {
+			Stream string `json:"stream"`
+			Error  string `json:"error"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			return fmt.Errorf("build output parse error: %w", err)
+		}
+		if msg.Stream != "" {
+			if out.Len() < 64*1024 {
+				_, _ = out.WriteString(msg.Stream)
+			}
+		}
+		if msg.Error != "" {
+			tail := strings.TrimSpace(out.String())
+			if tail == "" {
+				return fmt.Errorf("build failed: %s", msg.Error)
+			}
+			return fmt.Errorf("build failed: %s\n%s", msg.Error, tail)
+		}
+	}
 	return nil
 }
 
@@ -255,7 +286,7 @@ func (s *service) runTestCase(ctx context.Context, imageName string, tc *ty.Test
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create container: %w", err)
 	}
-	defer s.dockerClient.ContainerRemove(ctx, cont.ID, container.RemoveOptions{Force: true})
+	defer s.dockerClient.ContainerRemove(context.Background(), cont.ID, container.RemoveOptions{Force: true})
 
 	hijackedResp, err := s.dockerClient.ContainerAttach(ctx, cont.ID, container.AttachOptions{
 		Stream: true,
@@ -279,32 +310,22 @@ func (s *service) runTestCase(ctx context.Context, imageName string, tc *ty.Test
 	hijackedResp.CloseWrite()
 
 	resultC, errC := s.dockerClient.ContainerWait(ctx, cont.ID, container.WaitConditionNotRunning)
-	ctxTimeout, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
 
 	select {
-	case <-ctxTimeout.Done():
+	case <-ctx.Done():
 		return "TLE", "Time Limit Exceeded", nil
 	case err := <-errC:
 		return "", "", fmt.Errorf("error waiting for container: %w", err)
 	case result := <-resultC:
 		outputBuf := new(bytes.Buffer)
-		io.Copy(outputBuf, hijackedResp.Reader)
+		errBuf := new(bytes.Buffer)
+		_, _ = stdcopy.StdCopy(outputBuf, errBuf, hijackedResp.Reader)
 
 		if result.StatusCode != 0 {
-			return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", result.StatusCode, outputBuf.String()), nil
-		}
-		programOutput := ""
-		if outputBuf.Len() > 8 {
-			programOutput = outputBuf.String()[8:]
-		} else {
-			programOutput = outputBuf.String()
+			return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", result.StatusCode, errBuf.String()), nil
 		}
 
-		if result.StatusCode != 0 {
-			return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", result.StatusCode, programOutput), nil
-		}
-
+		programOutput := outputBuf.String()
 		if strings.TrimSpace(programOutput) != strings.TrimSpace(tc.Output) {
 			return "WA", fmt.Sprintf("Wrong Answer.\nExpected:\n%s\nGot:\n%s", tc.Output, programOutput), nil
 		}
