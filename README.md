@@ -13,17 +13,31 @@
 
 **Требования:** Docker + Docker Compose.  
 
-1) Создать .env файлы для каждого сервиса и в корне по шаблонным .env.example.
-Можно сделать это через скрипт или настроить вручную. <br>
-Автоматически заполнить через скрипт можно командой:
+1) Создать .env файлы для каждого сервиса и в корне по шаблонным .env.example:
 ```bash
-./scripts/init-env.sh
+make env
 ```
 
 2) Запуск:
 ```bash
-docker compose up --build
+make compose-up
 ```
+
+## Вспомогательные команды по проекту
+```bash
+make help
+```
+
+## Тесты
+```bash
+make test       # тесты (без подробного вывода)
+make test-v     # тесты с подробным выводом
+make test-quiet # подробный вывод только по тестам
+make cover      # покрытие по каждому пакету
+make cover-quiet # покрытие только там, где оно есть
+```
+
+Интеграционные тесты `problem_service` используют Testcontainers — нужен запущенный Docker.
 
 ## Endpoints
 - Healthcheck: `GET http://localhost:8000`
