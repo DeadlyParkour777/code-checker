@@ -238,7 +238,6 @@ paths:
 
 components:
   securitySchemes:
-    # Используем HTTP Bearer, так как код парсит "Bearer <token>"
     BearerAuth:
       type: http
       scheme: bearer
@@ -262,8 +261,9 @@ components:
       properties:
         user_id:
           type: string
-        username:
+        message:
           type: string
+          example: "User registered"
 
     LoginRequest:
       type: object
@@ -281,8 +281,8 @@ components:
       properties:
         access_token:
           type: string
-        expires_in:
-          type: integer
+        user_id:
+          type: string
 
     CreateProblemRequest:
       type: object
@@ -303,6 +303,8 @@ components:
         title:
           type: string
         description:
+          type: string
+        created_at:
           type: string
 
     CreateTestCaseRequest:
@@ -333,10 +335,19 @@ components:
       properties:
         id:
           type: string
+        problem_id:
+          type: string
+        user_id:
+          type: string
+        code:
+          type: string
+        language:
+          type: string
         status:
           type: string
-          example: "queued"
-        problem_id:
+        created_at:
+          type: string
+        updated_at:
           type: string
 
     SubmissionResult:
@@ -346,11 +357,15 @@ components:
           type: string
         problem_id:
           type: string
+        user_id:
+          type: string
         language:
           type: string
         status:
           type: string
-        execution_time:
+        created_at:
+          type: string
+        updated_at:
           type: string
 
     ErrorResponse:
