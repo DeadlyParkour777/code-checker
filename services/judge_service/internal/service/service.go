@@ -85,6 +85,8 @@ func NewService(producer *kafka.Writer, timeout time.Duration, hostTempPath stri
 		log.Fatalf("Failed to create docker client: %v", err)
 	}
 
+	ensureBaseImages(dockerCli)
+
 	conn, err := grpc.NewClient(problemServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to problem service: %v", err)
@@ -97,6 +99,27 @@ func NewService(producer *kafka.Writer, timeout time.Duration, hostTempPath stri
 		timeout:       timeout,
 		hostTempPath:  hostTempPath,
 		problemClient: problemClient,
+	}
+}
+
+func ensureBaseImages(dockerCli *client.Client) {
+	seen := map[string]struct{}{}
+	for _, cfg := range languageConfigs {
+		if _, ok := seen[cfg.Image]; ok {
+			continue
+		}
+		seen[cfg.Image] = struct{}{}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		log.Printf("Pre-pulling base image %s", cfg.Image)
+		reader, err := dockerCli.ImagePull(ctx, cfg.Image, image.PullOptions{})
+		if err != nil {
+			cancel()
+			log.Printf("Failed to pull base image %s: %v", cfg.Image, err)
+			continue
+		}
+		_, _ = io.Copy(io.Discard, reader)
+		_ = reader.Close()
+		cancel()
 	}
 }
 
