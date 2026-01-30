@@ -11,8 +11,6 @@ services:
     container_name: kafka
     depends_on:
       - zookeeper
-    ports:
-      - "${KAFKA_PORT}:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
@@ -41,8 +39,6 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-    ports:
-      - "${DB_PUBLISHED_PORT}:${DB_PORT}"
     volumes:
       - db-data:/var/lib/postgresql/data
     restart: always
@@ -73,8 +69,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_DIR: services/auth_service
-    ports:
-      - "${AUTH_PORT}:8001"
     env_file:
       - ./services/auth_service/.env
     depends_on:
@@ -91,8 +85,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_DIR: services/submission_service
-    ports:
-      - "${SUBMISSION_PORT}:8004"
     env_file:
       - ./services/submission_service/.env
     depends_on:
@@ -125,8 +117,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_DIR: services/problem_service
-    ports:
-      - "${PROBLEM_PORT}:8002"
     env_file:
       - ./services/problem_service/.env
     depends_on:
@@ -138,8 +128,6 @@ services:
     image: redis:7-alpine
     container_name: redis
     restart: always
-    ports:
-      - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
       
@@ -150,8 +138,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_DIR: services/result_service
-    ports:
-      - "${RESULT_PORT}:8003"
     env_file:
       - ./services/result_service/.env
     depends_on:
