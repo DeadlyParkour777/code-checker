@@ -170,3 +170,4 @@ volumes:
   db-data:
   redis-data:
   submissions-data:
+    name: submissions-data
