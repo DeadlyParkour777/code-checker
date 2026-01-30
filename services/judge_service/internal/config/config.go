@@ -14,6 +14,7 @@ type Config struct {
 	ExecutionTimeoutSeconds int
 	HostTempPath            string
 	ProblemServiceAddr      string
+	WorkerCount             int
 }
 
 func ConfigInit() Config {
@@ -22,6 +23,10 @@ func ConfigInit() Config {
 	brokersStr := getEnv("KAFKA_BROKERS", "localhost:9092")
 
 	timeout, _ := strconv.Atoi(getEnv("EXECUTION_TIMEOUT_SECONDS", "2"))
+	workerCount, _ := strconv.Atoi(getEnv("WORKER_COUNT", "4"))
+	if workerCount <= 0 {
+		workerCount = 1
+	}
 
 	return Config{
 		KafkaBrokers:            strings.Split(brokersStr, ","),
@@ -31,6 +36,7 @@ func ConfigInit() Config {
 		ExecutionTimeoutSeconds: timeout,
 		HostTempPath:            getEnv("HOST_TEMP_PATH", "/tmp/submissions"),
 		ProblemServiceAddr:      getEnv("PROBLEM_SERVICE_ADDR", "problem-service:8002"),
+		WorkerCount:             workerCount,
 	}
 }
 

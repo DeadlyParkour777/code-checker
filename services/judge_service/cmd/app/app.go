@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/DeadlyParkour777/code-checker/services/judge_service/internal/config"
@@ -14,6 +15,7 @@ import (
 type App struct {
 	kafkaReader *kafka.Reader
 	handler     *handler.KafkaConsumer
+	workerCount int
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -56,6 +58,7 @@ func New(cfg config.Config) (*App, error) {
 		kafkaProducer,
 		time.Duration(cfg.ExecutionTimeoutSeconds)*time.Second,
 		cfg.HostTempPath,
+		cfg.WorkerCount,
 		cfg.ProblemServiceAddr,
 	)
 	log.Println("Service layer initialized")
@@ -66,6 +69,7 @@ func New(cfg config.Config) (*App, error) {
 	return &App{
 		kafkaReader: kafkaReader,
 		handler:     kafkaHandler,
+		workerCount: cfg.WorkerCount,
 	}, nil
 }
 
@@ -75,17 +79,37 @@ func (a *App) Run() error {
 	log.Println("Judge service worker started. Waiting for submissions...")
 	ctx := context.Background()
 
+	jobs := make(chan kafka.Message, a.workerCount)
+	var wg sync.WaitGroup
+	var commitMu sync.Mutex
+
+	for i := 0; i < a.workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range jobs {
+				if err := a.handler.ProcessMessage(ctx, msg); err != nil {
+					log.Printf("failed to process message: %v", err)
+					continue
+				}
+				commitMu.Lock()
+				if err := a.kafkaReader.CommitMessages(ctx, msg); err != nil {
+					log.Printf("failed to commit message: %v", err)
+				}
+				commitMu.Unlock()
+			}
+		}()
+	}
+
 	for {
 		msg, err := a.kafkaReader.FetchMessage(ctx)
 		if err != nil {
 			log.Printf("could not fetch message: %v", err)
+			close(jobs)
+			wg.Wait()
 			return err
 		}
 
-		a.handler.ProcessMessage(ctx, msg)
-
-		if err := a.kafkaReader.CommitMessages(ctx, msg); err != nil {
-			log.Printf("failed to commit message: %v", err)
-		}
+		jobs <- msg
 	}
 }

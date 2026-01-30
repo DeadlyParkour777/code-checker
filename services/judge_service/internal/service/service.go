@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,10 +15,12 @@ import (
 
 	problempb "github.com/DeadlyParkour777/code-checker/pkg/problem"
 	ty "github.com/DeadlyParkour777/code-checker/services/judge_service/internal/types"
-	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
@@ -27,65 +30,68 @@ import (
 )
 
 type LanguageConfig struct {
-	Image          string
-	CodeFileName   string
-	DockerfileTmpl string
+	CodeFileName string
 }
 
 var languageConfigs = map[string]LanguageConfig{
 	"go": {
-		Image:        "golang:1.24-alpine",
 		CodeFileName: "main.go",
-		DockerfileTmpl: `
-FROM %[1]s AS builder
-WORKDIR /app
-COPY . .
-RUN go mod init sandbox && go mod tidy
-RUN go build -o /app/main .
-
-FROM scratch
-WORKDIR /app
-COPY --from=builder /app/main .
-CMD ["/app/main"]
-`,
 	},
 	"python": {
-		Image:        "python:3.11-alpine",
 		CodeFileName: "main.py",
-		DockerfileTmpl: `
-FROM %[1]s
-WORKDIR /app
-COPY . .
-CMD ["python", "main.py"]
-`,
 	},
 }
-
-const sharedSubmissionsDir = "/tmp/submissions"
 
 const (
 	buildTimeout = 120 * time.Second
 )
 
+const runtimeImage = "code-checker-judge-runtime:latest"
+const workVolume = "submissions-data"
+
+//go:embed runtime/Dockerfile
+var runtimeDockerfile []byte
+
+//go:embed runtime/runner.sh
+var runtimeRunnerScript []byte
+
 type Service interface {
-	ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent)
+	ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent) error
 }
 
 type service struct {
 	kafkaProducer *kafka.Writer
 	dockerClient  *client.Client
 	timeout       time.Duration
-	hostTempPath  string
+	workDir       string
+	workerPool    chan string
 	problemClient problempb.ProblemServiceClient
 }
 
-func NewService(producer *kafka.Writer, timeout time.Duration, hostTempPath string, problemServiceAddr string) Service {
+func NewService(
+	producer *kafka.Writer,
+	timeout time.Duration,
+	workDir string,
+	workerCount int,
+	problemServiceAddr string,
+) Service {
 	dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		log.Fatalf("Failed to create docker client: %v", err)
 	}
 
-	ensureBaseImages(dockerCli)
+	if err := ensureRuntimeImage(dockerCli, runtimeImage); err != nil {
+		log.Fatalf("Failed to ensure runtime image: %v", err)
+	}
+
+	if err := ensureWorkVolume(dockerCli, workVolume); err != nil {
+		log.Fatalf("Failed to ensure work volume: %v", err)
+	}
+
+	workerPool := make(chan string, workerCount)
+	if err := createWorkerContainers(dockerCli, runtimeImage, workVolume, workDir, workerCount, workerPool); err != nil {
+		log.Fatalf("Failed to create worker containers: %v", err)
+	}
 
 	conn, err := grpc.NewClient(problemServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -97,54 +103,139 @@ func NewService(producer *kafka.Writer, timeout time.Duration, hostTempPath stri
 		kafkaProducer: producer,
 		dockerClient:  dockerCli,
 		timeout:       timeout,
-		hostTempPath:  hostTempPath,
+		workDir:       workDir,
+		workerPool:    workerPool,
 		problemClient: problemClient,
 	}
 }
 
-func ensureBaseImages(dockerCli *client.Client) {
-	seen := map[string]struct{}{}
-	for _, cfg := range languageConfigs {
-		if _, ok := seen[cfg.Image]; ok {
-			continue
-		}
-		seen[cfg.Image] = struct{}{}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		log.Printf("Pre-pulling base image %s", cfg.Image)
-		reader, err := dockerCli.ImagePull(ctx, cfg.Image, image.PullOptions{})
-		if err != nil {
-			cancel()
-			log.Printf("Failed to pull base image %s: %v", cfg.Image, err)
-			continue
-		}
-		_, _ = io.Copy(io.Discard, reader)
-		_ = reader.Close()
-		cancel()
+func ensureRuntimeImage(dockerCli *client.Client, imageName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	_, _, err := dockerCli.ImageInspectWithRaw(ctx, imageName)
+	if err == nil {
+		return nil
 	}
+	if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("image inspect failed: %w", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "judge-runtime-")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	if err := os.WriteFile(filepath.Join(tempDir, "Dockerfile"), runtimeDockerfile, 0644); err != nil {
+		return fmt.Errorf("failed to write runtime Dockerfile: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "runner.sh"), runtimeRunnerScript, 0755); err != nil {
+		return fmt.Errorf("failed to write runtime runner: %w", err)
+	}
+
+	buildContext, err := archive.TarWithOptions(tempDir, &archive.TarOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create tar archive: %w", err)
+	}
+	defer buildContext.Close()
+
+	resp, err := dockerCli.ImageBuild(ctx, buildContext, types.ImageBuildOptions{
+		Dockerfile:  "Dockerfile",
+		Tags:        []string{imageName},
+		Remove:      true,
+		ForceRemove: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build runtime image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if err := parseBuildErrors(resp.Body); err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (s *service) ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent) {
+func ensureWorkVolume(dockerCli *client.Client, volumeName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := dockerCli.VolumeInspect(ctx, volumeName)
+	if err == nil {
+		return nil
+	}
+	if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("volume inspect failed: %w", err)
+	}
+
+	_, err = dockerCli.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName})
+	if err != nil {
+		return fmt.Errorf("volume create failed: %w", err)
+	}
+	return nil
+}
+
+func createWorkerContainers(
+	dockerCli *client.Client,
+	imageName string,
+	volumeName string,
+	workDir string,
+	workerCount int,
+	pool chan<- string,
+) error {
+	for i := 0; i < workerCount; i++ {
+		name := fmt.Sprintf("judge-worker-%s-%d", uuid.New().String(), i)
+		cont, err := dockerCli.ContainerCreate(context.Background(), &container.Config{
+			Image: imageName,
+			Cmd:   []string{"sh", "-c", "trap : TERM INT; sleep infinity & wait"},
+		}, &container.HostConfig{
+			Resources:   container.Resources{Memory: 128 * 1024 * 1024, NanoCPUs: int64(0.5 * 1e9)},
+			NetworkMode: "none",
+			Mounts: []mount.Mount{
+				{Type: mount.TypeVolume, Source: volumeName, Target: workDir},
+			},
+		}, nil, nil, name)
+		if err != nil {
+			return fmt.Errorf("failed to create worker container: %w", err)
+		}
+
+		if err := dockerCli.ContainerStart(context.Background(), cont.ID, container.StartOptions{}); err != nil {
+			return fmt.Errorf("failed to start worker container: %w", err)
+		}
+
+		pool <- cont.ID
+	}
+	return nil
+}
+
+func (s *service) ProcessSubmission(ctx context.Context, submission *ty.SubmissionEvent) error {
 	log.Printf("Started processing submission %s", submission.SubmissionID)
-	go func() {
-		result, err := s.judge(ctx, submission)
-		if err != nil {
-			result = &ty.ResultEvent{
-				SubmissionID: submission.SubmissionID,
-				Status:       "RE",
-				Message:      err.Error(),
-			}
-		}
 
-		err = s.kafkaProducer.WriteMessages(ctx, kafka.Message{Value: result.Marshal()})
-		if err != nil {
-			log.Printf("Failed to write result for submission %s: %v", submission.SubmissionID, err)
-		} else {
-			log.Printf("Finished processing submission %s with status %s", submission.SubmissionID, result.Status)
+	workerID := <-s.workerPool
+	defer func() { s.workerPool <- workerID }()
+
+	result, err := s.judge(ctx, submission, workerID)
+	if err != nil {
+		result = &ty.ResultEvent{
+			SubmissionID: submission.SubmissionID,
+			Status:       "RE",
+			Message:      err.Error(),
 		}
-	}()
+	}
+
+	err = s.kafkaProducer.WriteMessages(ctx, kafka.Message{Value: result.Marshal()})
+	if err != nil {
+		log.Printf("Failed to write result for submission %s: %v", submission.SubmissionID, err)
+		return err
+	}
+
+	log.Printf("Finished processing submission %s with status %s", submission.SubmissionID, result.Status)
+	return nil
 }
 
-func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*ty.ResultEvent, error) {
+func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent, workerID string) (*ty.ResultEvent, error) {
 	langConfig, ok := languageConfigs[submission.Language]
 	if !ok {
 		return &ty.ResultEvent{
@@ -173,7 +264,15 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 		}, nil
 	}
 
-	tempDir, err := os.MkdirTemp(sharedSubmissionsDir, "sub-*")
+	if err := os.MkdirAll(s.workDir, 0755); err != nil {
+		return &ty.ResultEvent{
+			SubmissionID: submission.SubmissionID,
+			Status:       "RE",
+			Message:      "Failed to ensure work dir",
+		}, err
+	}
+
+	subDir, err := os.MkdirTemp(s.workDir, "sub-*")
 	if err != nil {
 		return &ty.ResultEvent{
 			SubmissionID: submission.SubmissionID,
@@ -181,35 +280,46 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 			Message:      "Failed to create temp dir",
 		}, err
 	}
-	defer os.RemoveAll(tempDir)
+	defer os.RemoveAll(subDir)
 
-	dockerfileContent := fmt.Sprintf(langConfig.DockerfileTmpl, langConfig.Image)
-	if err := os.WriteFile(filepath.Join(tempDir, "Dockerfile.sandbox"), []byte(dockerfileContent), 0644); err != nil {
-		return &ty.ResultEvent{
-			SubmissionID: submission.SubmissionID,
-			Status:       "RE",
-			Message:      "Failed to create sandbox Dockerfile",
-		}, nil
-	}
-	if err := os.WriteFile(filepath.Join(tempDir, langConfig.CodeFileName), []byte(submission.Code), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, langConfig.CodeFileName), []byte(submission.Code), 0644); err != nil {
 		return &ty.ResultEvent{SubmissionID: submission.SubmissionID,
 			Status:  "RE",
 			Message: "Failed to write code to file",
 		}, nil
 	}
 
-	imageName := "sandbox-" + uuid.New().String()
-	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
-	defer cancelBuild()
-	if err := s.buildSandboxImage(buildCtx, tempDir, imageName); err != nil {
-		log.Printf("Build failed for submission %s: %v", submission.SubmissionID, err)
-		return &ty.ResultEvent{
-			SubmissionID: submission.SubmissionID,
-			Status:       "CE",
-			Message:      fmt.Sprintf("Compilation Error: %v", err),
-		}, nil
+	binPath := filepath.Join(subDir, "app.bin")
+	if submission.Language == "go" {
+		buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout+5*time.Second)
+		defer cancelBuild()
+		stdout, stderr, exitCode, err := s.execInWorker(buildCtx, workerID, []string{
+			"judge-runner",
+			"--phase", "compile",
+			"--lang", submission.Language,
+			"--workdir", subDir,
+			"--outbin", binPath,
+			"--timeout", fmt.Sprintf("%d", int(buildTimeout.Seconds())),
+		}, "")
+		if err != nil {
+			return &ty.ResultEvent{
+				SubmissionID: submission.SubmissionID,
+				Status:       "CE",
+				Message:      fmt.Sprintf("Compilation Error: %v", err),
+			}, nil
+		}
+		if exitCode != 0 {
+			msg := strings.TrimSpace(stderr)
+			if msg == "" {
+				msg = strings.TrimSpace(stdout)
+			}
+			return &ty.ResultEvent{
+				SubmissionID: submission.SubmissionID,
+				Status:       "CE",
+				Message:      fmt.Sprintf("Compilation Error: %s", msg),
+			}, nil
+		}
 	}
-	defer s.dockerClient.ImageRemove(context.Background(), imageName, image.RemoveOptions{Force: true})
 
 	for i, testCase := range testCases {
 		log.Printf("Running test case %d for submission %s", i+1, submission.SubmissionID)
@@ -219,8 +329,8 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 			Output: testCase.GetOutputData(),
 		}
 
-		runCtx, cancelRun := context.WithTimeout(ctx, s.timeout)
-		status, output, err := s.runTestCase(runCtx, imageName, internalTC)
+		runCtx, cancelRun := context.WithTimeout(ctx, s.timeout+5*time.Second)
+		status, output, err := s.runTestCase(runCtx, workerID, submission.Language, subDir, binPath, internalTC)
 		cancelRun()
 		if err != nil {
 			return &ty.ResultEvent{
@@ -237,35 +347,106 @@ func (s *service) judge(ctx context.Context, submission *ty.SubmissionEvent) (*t
 			}, nil
 		}
 	}
+
 	return &ty.ResultEvent{SubmissionID: submission.SubmissionID,
 		Status:  "AC",
 		Message: "All tests passed",
 	}, nil
 }
 
-func (s *service) buildSandboxImage(ctx context.Context, dir, imageName string) error {
-	buildContext, err := archive.TarWithOptions(dir, &archive.TarOptions{})
+func (s *service) runTestCase(
+	ctx context.Context,
+	workerID string,
+	lang string,
+	workDir string,
+	binPath string,
+	tc *ty.TestCase,
+) (string, string, error) {
+	stdout, stderr, exitCode, err := s.execInWorker(ctx, workerID, []string{
+		"judge-runner",
+		"--phase", "run",
+		"--lang", lang,
+		"--workdir", workDir,
+		"--outbin", binPath,
+		"--timeout", fmt.Sprintf("%d", int(s.timeout.Seconds())),
+	}, tc.Input)
 	if err != nil {
-		return fmt.Errorf("failed to create tar archive: %w", err)
+		return "RE", err.Error(), nil
 	}
-	defer buildContext.Close()
 
-	resp, err := s.dockerClient.ImageBuild(ctx, buildContext, build.ImageBuildOptions{
-		Dockerfile:  "Dockerfile.sandbox",
-		Tags:        []string{imageName},
-		Remove:      true,
-		ForceRemove: true,
+	if exitCode == 124 || exitCode == 137 {
+		return "TLE", "Time Limit Exceeded", nil
+	}
+
+	if exitCode != 0 {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(stdout)
+		}
+		return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", exitCode, msg), nil
+	}
+
+	programOutput := stdout
+	if strings.TrimSpace(programOutput) != strings.TrimSpace(tc.Output) {
+		return "WA", fmt.Sprintf("Wrong Answer.\nExpected:\n%s\nGot:\n%s", tc.Output, programOutput), nil
+	}
+
+	return "AC", "", nil
+}
+
+func (s *service) execInWorker(
+	ctx context.Context,
+	workerID string,
+	cmd []string,
+	stdin string,
+) (string, string, int, error) {
+	execResp, err := s.dockerClient.ContainerExecCreate(ctx, workerID, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		AttachStdin:  true,
+		Cmd:          cmd,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to build image: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if err := parseBuildErrors(resp.Body); err != nil {
-		return err
+		return "", "", 0, fmt.Errorf("exec create failed: %w", err)
 	}
 
-	return nil
+	attachResp, err := s.dockerClient.ContainerExecAttach(ctx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		return "", "", 0, fmt.Errorf("exec attach failed: %w", err)
+	}
+	defer attachResp.Close()
+
+	if stdin != "" {
+		if _, err := attachResp.Conn.Write([]byte(stdin)); err != nil {
+			return "", "", 0, fmt.Errorf("failed to write to stdin: %w", err)
+		}
+	}
+	attachResp.CloseWrite()
+
+	stdoutBuf := new(bytes.Buffer)
+	stderrBuf := new(bytes.Buffer)
+	done := make(chan struct{})
+	go func() {
+		_, _ = stdcopy.StdCopy(stdoutBuf, stderrBuf, attachResp.Reader)
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", "", 0, ctx.Err()
+	case <-done:
+	}
+
+	for {
+		inspect, err := s.dockerClient.ContainerExecInspect(ctx, execResp.ID)
+		if err != nil {
+			return "", "", 0, fmt.Errorf("exec inspect failed: %w", err)
+		}
+		if !inspect.Running {
+			return stdoutBuf.String(), stderrBuf.String(), inspect.ExitCode, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func parseBuildErrors(r io.Reader) error {
@@ -293,65 +474,4 @@ func parseBuildErrors(r io.Reader) error {
 		}
 	}
 	return nil
-}
-
-func (s *service) runTestCase(ctx context.Context, imageName string, tc *ty.TestCase) (string, string, error) {
-	cont, err := s.dockerClient.ContainerCreate(ctx, &container.Config{
-		Image:        imageName,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		OpenStdin:    true,
-		StdinOnce:    true,
-	}, &container.HostConfig{
-		Resources: container.Resources{Memory: 128 * 1024 * 1024, NanoCPUs: int64(0.5 * 1e9)},
-	}, nil, nil, "")
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create container: %w", err)
-	}
-	defer s.dockerClient.ContainerRemove(context.Background(), cont.ID, container.RemoveOptions{Force: true})
-
-	hijackedResp, err := s.dockerClient.ContainerAttach(ctx, cont.ID, container.AttachOptions{
-		Stream: true,
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("failed to attach to container: %w", err)
-	}
-	defer hijackedResp.Close()
-
-	if err := s.dockerClient.ContainerStart(ctx, cont.ID, container.StartOptions{}); err != nil {
-		return "", "", fmt.Errorf("failed to start container: %w", err)
-	}
-
-	if _, err := hijackedResp.Conn.Write([]byte(tc.Input)); err != nil {
-		return "", "", fmt.Errorf("failed to write to stdin: %w", err)
-	}
-
-	hijackedResp.CloseWrite()
-
-	resultC, errC := s.dockerClient.ContainerWait(ctx, cont.ID, container.WaitConditionNotRunning)
-
-	select {
-	case <-ctx.Done():
-		return "TLE", "Time Limit Exceeded", nil
-	case err := <-errC:
-		return "", "", fmt.Errorf("error waiting for container: %w", err)
-	case result := <-resultC:
-		outputBuf := new(bytes.Buffer)
-		errBuf := new(bytes.Buffer)
-		_, _ = stdcopy.StdCopy(outputBuf, errBuf, hijackedResp.Reader)
-
-		if result.StatusCode != 0 {
-			return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", result.StatusCode, errBuf.String()), nil
-		}
-
-		programOutput := outputBuf.String()
-		if strings.TrimSpace(programOutput) != strings.TrimSpace(tc.Output) {
-			return "WA", fmt.Sprintf("Wrong Answer.\nExpected:\n%s\nGot:\n%s", tc.Output, programOutput), nil
-		}
-	}
-	return "AC", "", nil
 }

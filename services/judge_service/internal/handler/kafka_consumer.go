@@ -18,12 +18,12 @@ func NewKafkaConsumer(svc service.Service) *KafkaConsumer {
 	return &KafkaConsumer{service: svc}
 }
 
-func (h *KafkaConsumer) ProcessMessage(ctx context.Context, msg kafka.Message) {
+func (h *KafkaConsumer) ProcessMessage(ctx context.Context, msg kafka.Message) error {
 	var submission types.SubmissionEvent
 	if err := json.Unmarshal(msg.Value, &submission); err != nil {
 		log.Printf("Failed to unmarshal submission, skipping message: %v", err)
-		return
+		return nil
 	}
 
-	h.service.ProcessSubmission(ctx, &submission)
+	return h.service.ProcessSubmission(ctx, &submission)
 }
