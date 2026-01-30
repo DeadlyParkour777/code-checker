@@ -3,7 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 	ty "github.com/DeadlyParkour777/code-checker/services/judge_service/internal/types"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
@@ -48,6 +51,9 @@ const (
 
 const runtimeImage = "code-checker-judge-runtime:latest"
 const workVolume = "submissions-data"
+const workerLabelKey = "code-checker.worker"
+const workerLabelValue = "judge"
+const runtimeLabelKey = "code-checker.runtime.sha256"
 
 //go:embed runtime/Dockerfile
 var runtimeDockerfile []byte
@@ -88,6 +94,10 @@ func NewService(
 		log.Fatalf("Failed to ensure work volume: %v", err)
 	}
 
+	if err := cleanupWorkerContainers(dockerCli); err != nil {
+		log.Printf("Failed to cleanup old worker containers: %v", err)
+	}
+
 	workerPool := make(chan string, workerCount)
 	if err := createWorkerContainers(dockerCli, runtimeImage, workVolume, workDir, workerCount, workerPool); err != nil {
 		log.Fatalf("Failed to create worker containers: %v", err)
@@ -113,11 +123,18 @@ func ensureRuntimeImage(dockerCli *client.Client, imageName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	_, _, err := dockerCli.ImageInspectWithRaw(ctx, imageName)
+	dockerfileData := normalizeLineEndings(runtimeDockerfile)
+	runnerData := normalizeLineEndings(runtimeRunnerScript)
+	signature := runtimeSignature(dockerfileData, runnerData)
+
+	img, _, err := dockerCli.ImageInspectWithRaw(ctx, imageName)
 	if err == nil {
-		return nil
-	}
-	if !errdefs.IsNotFound(err) {
+		if img.Config != nil && img.Config.Labels != nil {
+			if img.Config.Labels[runtimeLabelKey] == signature {
+				return nil
+			}
+		}
+	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("image inspect failed: %w", err)
 	}
 
@@ -127,10 +144,11 @@ func ensureRuntimeImage(dockerCli *client.Client, imageName string) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	if err := os.WriteFile(filepath.Join(tempDir, "Dockerfile"), runtimeDockerfile, 0644); err != nil {
+	dockerfileWithLabel := appendRuntimeLabel(dockerfileData, signature)
+	if err := os.WriteFile(filepath.Join(tempDir, "Dockerfile"), dockerfileWithLabel, 0644); err != nil {
 		return fmt.Errorf("failed to write runtime Dockerfile: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(tempDir, "runner.sh"), runtimeRunnerScript, 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "runner.sh"), runnerData, 0755); err != nil {
 		return fmt.Errorf("failed to write runtime runner: %w", err)
 	}
 
@@ -190,6 +208,9 @@ func createWorkerContainers(
 		cont, err := dockerCli.ContainerCreate(context.Background(), &container.Config{
 			Image: imageName,
 			Cmd:   []string{"sh", "-c", "trap : TERM INT; sleep infinity & wait"},
+			Labels: map[string]string{
+				workerLabelKey: workerLabelValue,
+			},
 		}, &container.HostConfig{
 			Resources:   container.Resources{Memory: 128 * 1024 * 1024, NanoCPUs: int64(0.5 * 1e9)},
 			NetworkMode: "none",
@@ -207,6 +228,27 @@ func createWorkerContainers(
 
 		pool <- cont.ID
 	}
+	return nil
+}
+
+func cleanupWorkerContainers(dockerCli *client.Client) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	args := filters.NewArgs()
+	args.Add("label", fmt.Sprintf("%s=%s", workerLabelKey, workerLabelValue))
+
+	containers, err := dockerCli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return fmt.Errorf("list worker containers: %w", err)
+	}
+
+	for _, c := range containers {
+		if err := dockerCli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+			return fmt.Errorf("remove worker container %s: %w", c.ID, err)
+		}
+	}
+
 	return nil
 }
 
@@ -383,6 +425,7 @@ func (s *service) runTestCase(
 		if msg == "" {
 			msg = strings.TrimSpace(stdout)
 		}
+		log.Printf("Runtime error (exit %d). Stderr: %s", exitCode, strings.TrimSpace(stderr))
 		return "RE", fmt.Sprintf("Runtime Error (Exit Code: %d)\n%s", exitCode, msg), nil
 	}
 
@@ -474,4 +517,28 @@ func parseBuildErrors(r io.Reader) error {
 		}
 	}
 	return nil
+}
+
+func normalizeLineEndings(data []byte) []byte {
+	out := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	out = bytes.ReplaceAll(out, []byte("\r"), []byte("\n"))
+	return out
+}
+
+func runtimeSignature(dockerfileData []byte, runnerData []byte) string {
+	h := sha256.New()
+	_, _ = h.Write(dockerfileData)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(runnerData)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func appendRuntimeLabel(dockerfileData []byte, signature string) []byte {
+	out := dockerfileData
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	labelLine := fmt.Sprintf("LABEL %s=%s\n", runtimeLabelKey, signature)
+	out = append(out, []byte(labelLine)...)
+	return out
 }
